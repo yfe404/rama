@@ -9,7 +9,7 @@ use super::{Header, header::Name, huffman};
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
 
-use crate::header::{HeaderName, HeaderValue};
+use crate::header::{self, HeaderName, HeaderValue};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -70,6 +70,17 @@ impl Encoder {
     where
         I: IntoIterator<Item = Header<Option<HeaderName>>>,
     {
+        self.encode_with_policy(headers, dst, false);
+    }
+
+    pub(crate) fn encode_with_policy<I>(
+        &mut self,
+        headers: I,
+        dst: &mut BytesMut,
+        chrome_indexing: bool,
+    ) where
+        I: IntoIterator<Item = Header<Option<HeaderName>>>,
+    {
         let span = tracing::trace_span!("hpack::encode");
         let _e = span.enter();
 
@@ -78,28 +89,46 @@ impl Encoder {
         let mut last_index = None;
 
         for header in headers {
-            match header.reify() {
-                // The header has an associated name. In which case, try to
-                // index it in the table.
-                Ok(header) => {
-                    let index = self.table.index(header);
-                    self.encode_header(&index, dst);
+            if chrome_indexing && let Some(crumbs) = chrome_cookie_crumbs(&header) {
+                for crumb in crumbs {
+                    self.encode_one(crumb, dst, chrome_indexing, &mut last_index);
+                }
+            } else {
+                self.encode_one(header, dst, chrome_indexing, &mut last_index);
+            }
+        }
+    }
 
-                    last_index = Some(index);
-                }
-                // The header does not have an associated name. This means that
-                // the name is the same as the previously yielded header. In
-                // which case, we skip table lookup and just use the same index
-                // as the previous entry.
-                Err(value) => {
-                    self.encode_header_without_name(
-                        last_index.as_ref().unwrap_or_else(|| {
-                            panic!("encoding header without name, but no previous index to use for name");
-                        }),
-                        &value,
-                        dst,
-                    );
-                }
+    fn encode_one(
+        &mut self,
+        header: Header<Option<HeaderName>>,
+        dst: &mut BytesMut,
+        chrome_indexing: bool,
+        last_index: &mut Option<Index>,
+    ) {
+        match header.reify() {
+            // The header has an associated name. In which case, try to
+            // index it in the table.
+            Ok(header) => {
+                let index = self.table.index_with_policy(header, chrome_indexing);
+                self.encode_header(&index, dst);
+
+                *last_index = Some(index);
+            }
+            // The header does not have an associated name. This means that
+            // the name is the same as the previously yielded header. In
+            // which case, we skip table lookup and just use the same index
+            // as the previous entry.
+            Err(value) => {
+                self.encode_header_without_name(
+                    last_index.as_ref().unwrap_or_else(|| {
+                        panic!(
+                            "encoding header without name, but no previous index to use for name"
+                        );
+                    }),
+                    &value,
+                    dst,
+                );
             }
         }
     }
@@ -178,6 +207,92 @@ impl Encoder {
             }
         }
     }
+}
+
+/// Expand one RFC 6265 Cookie row into Chromium's HTTP/2 HPACK crumbs.
+///
+/// This runs inside the H2 encoder, after protocol selection and immediately
+/// before table lookup.  The request HeaderMap is therefore unchanged and an
+/// HTTP/1.x fallback retains its single Cookie field.  Malformed rows and
+/// already singular rows are left byte-for-byte unchanged.
+fn chrome_cookie_crumbs(
+    header: &Header<Option<HeaderName>>,
+) -> Option<Vec<Header<Option<HeaderName>>>> {
+    let Header::Field {
+        name: Some(name),
+        value,
+    } = header
+    else {
+        return None;
+    };
+    if name != header::COOKIE || !value.as_bytes().contains(&b';') {
+        return None;
+    }
+
+    let raw_crumbs = value
+        .as_bytes()
+        .split(|byte| *byte == b';')
+        .map(trim_cookie_ows)
+        .collect::<Vec<_>>();
+    if raw_crumbs.iter().any(|crumb| {
+        let Some(separator) = crumb.iter().position(|byte| *byte == b'=') else {
+            return true;
+        };
+        !valid_cookie_name(&crumb[..separator]) || !valid_cookie_value(&crumb[separator + 1..])
+    }) {
+        return None;
+    }
+
+    let sensitive = value.is_sensitive();
+    raw_crumbs
+        .into_iter()
+        .map(|crumb| {
+            let mut value = HeaderValue::from_bytes(crumb).ok()?;
+            value.set_sensitive(sensitive);
+            Some(Header::Field {
+                name: Some(name.clone()),
+                value,
+            })
+        })
+        .collect()
+}
+
+fn trim_cookie_ows(mut value: &[u8]) -> &[u8] {
+    while value
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        value = &value[1..];
+    }
+    while value
+        .last()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+fn valid_cookie_name(value: &[u8]) -> bool {
+    const SEPARATORS: &[u8] = b"()<>@,;:\\\"/[]?={} \t";
+    !value.is_empty()
+        && value
+            .iter()
+            .all(|byte| (0x21..=0x7e).contains(byte) && !SEPARATORS.contains(byte))
+}
+
+fn valid_cookie_value(value: &[u8]) -> bool {
+    let value = match value {
+        [b'"', inner @ .., b'"'] => inner,
+        _ if value.contains(&b'"') => return false,
+        _ => value,
+    };
+    value.iter().all(|byte| {
+        matches!(
+            byte,
+            0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e
+        )
+    })
 }
 
 impl Default for Encoder {
@@ -333,8 +448,10 @@ fn position(buf: &BytesMut) -> usize {
 
 #[cfg(test)]
 mod test {
+    use super::super::Decoder;
     use super::*;
     use crate::{HeaderValue, Method};
+    use std::{io::Cursor, ops::ControlFlow};
 
     #[test]
     fn test_encode_method_get() {
@@ -554,6 +671,101 @@ mod test {
     }
 
     #[test]
+    fn chrome_policy_indexes_content_length_and_sensitive_cookie_values() {
+        let mut encoder = Encoder::default();
+        let mut cookie = header("cookie", "a=b");
+        if let Header::Field { value, .. } = &mut cookie {
+            value.set_sensitive(true);
+        }
+        let mut dst = BytesMut::new();
+        encoder.encode_with_policy(
+            vec![header("content-length", "1234"), cookie],
+            &mut dst,
+            true,
+        );
+
+        assert_eq!(0b0100_0000 | 28, dst[0]);
+        assert_eq!(2, encoder.table.len());
+    }
+
+    #[test]
+    fn chrome_policy_emits_one_h2_cookie_field_per_pair_in_place() {
+        let mut encoder = Encoder::default();
+        let mut cookie = header("cookie", "__kasada=nonce; __Host-ghost-continuity=nonce");
+        if let Header::Field { value, .. } = &mut cookie {
+            value.set_sensitive(true);
+        }
+        let mut dst = BytesMut::new();
+        encoder.encode_with_policy(
+            vec![
+                header("accept-language", "en-US"),
+                cookie,
+                header("priority", "u=1, i"),
+            ],
+            &mut dst,
+            true,
+        );
+
+        assert_eq!(
+            decode_field_rows(dst),
+            [
+                ("accept-language".to_owned(), "en-US".to_owned()),
+                ("cookie".to_owned(), "__kasada=nonce".to_owned()),
+                (
+                    "cookie".to_owned(),
+                    "__Host-ghost-continuity=nonce".to_owned(),
+                ),
+                ("priority".to_owned(), "u=1, i".to_owned()),
+            ]
+        );
+        assert_eq!(encoder.table.len(), 4);
+
+        let mut second_block = BytesMut::new();
+        let mut repeated = header("cookie", "__kasada=nonce; __Host-ghost-continuity=nonce");
+        if let Header::Field { value, .. } = &mut repeated {
+            value.set_sensitive(true);
+        }
+        encoder.encode_with_policy(vec![repeated], &mut second_block, true);
+        assert_eq!(second_block.len(), 2);
+        assert!(second_block.iter().all(|byte| byte & 0x80 == 0x80));
+    }
+
+    #[test]
+    fn default_hpack_policy_leaves_a_combined_cookie_unchanged() {
+        let mut encoder = Encoder::default();
+        let mut dst = BytesMut::new();
+        encoder.encode(vec![header("cookie", "first=1; second=2")], &mut dst);
+
+        assert_eq!(
+            decode_field_rows(dst),
+            [("cookie".to_owned(), "first=1; second=2".to_owned())]
+        );
+    }
+
+    #[test]
+    fn chrome_cookie_crumbs_preserve_sensitivity_and_reject_ambiguity() {
+        let mut cookie = header("cookie", "first=1; second=2");
+        if let Header::Field { value, .. } = &mut cookie {
+            value.set_sensitive(true);
+        }
+        let crumbs = chrome_cookie_crumbs(&cookie).unwrap();
+        assert_eq!(crumbs.len(), 2);
+        assert!(crumbs.iter().all(|crumb| match crumb {
+            Header::Field { value, .. } => value.is_sensitive(),
+            _ => false,
+        }));
+
+        for malformed in [
+            "first=1;",
+            "first=1; missing-value",
+            "=missing-name; b=2",
+            "first=\"legacy;value\"; second=2",
+        ] {
+            assert!(chrome_cookie_crumbs(&header("cookie", malformed)).is_none());
+        }
+    }
+
+    #[test]
     fn test_encoding_headers_with_same_name() {
         let mut encoder = Encoder::default();
         let name = "hello";
@@ -756,6 +968,20 @@ mod test {
             name: Some(name),
             value,
         }
+    }
+
+    fn decode_field_rows(mut encoded: BytesMut) -> Vec<(String, String)> {
+        let mut decoder = Decoder::new(4096);
+        let mut rows = Vec::new();
+        decoder
+            .decode(&mut Cursor::new(&mut encoded), |header| {
+                if let Header::Field { name, value } = header {
+                    rows.push((name.as_str().to_owned(), value.to_str().unwrap().to_owned()));
+                }
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        rows
     }
 
     fn huff_decode(src: &[u8]) -> BytesMut {

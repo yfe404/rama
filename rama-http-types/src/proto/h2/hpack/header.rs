@@ -184,6 +184,25 @@ impl Header {
         }
     }
 
+    pub fn set_sensitive(&mut self, sensitive: bool) {
+        if let Self::Field { value, .. } = self {
+            value.set_sensitive(sensitive);
+        }
+    }
+
+    pub fn chrome_indexes_value(&self) -> bool {
+        use crate::header;
+
+        matches!(
+            self,
+            Self::Field { name, .. }
+                if matches!(
+                    name.standard(),
+                    Some(header::StandardHeader::ContentLength | header::StandardHeader::Cookie)
+                )
+        )
+    }
+
     pub fn skip_value_index(&self) -> bool {
         use crate::header;
 

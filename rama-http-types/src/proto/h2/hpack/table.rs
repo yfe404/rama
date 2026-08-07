@@ -130,13 +130,16 @@ impl Table {
         }
     }
 
-    /// Index the header in the HPACK table.
-    pub(super) fn index(&mut self, header: Header) -> Index {
+    pub(super) fn index_with_policy(&mut self, mut header: Header, chrome_indexing: bool) -> Index {
         // Check the static table
+        let force_index = chrome_indexing && header.chrome_indexes_value();
+        if force_index {
+            header.set_sensitive(false);
+        }
         let statik = index_static(&header);
 
         // Don't index certain headers. This logic is borrowed from nghttp2.
-        if header.skip_value_index() {
+        if header.skip_value_index() && !force_index {
             // Right now, if this is true, the header name is always in the
             // static table. At some point in the future, this might not be true
             // and this logic will need to be updated.

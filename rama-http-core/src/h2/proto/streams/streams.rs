@@ -8,7 +8,11 @@ use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
-use crate::h2::{client, proto, server};
+use crate::h2::{
+    client,
+    client::{RequestHeadersPriority, RequestHpackIndexing},
+    proto, server,
+};
 
 use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
@@ -312,6 +316,11 @@ where
         use rama_http_types::Method;
 
         let protocol = request.extensions().get_ref::<Protocol>().cloned();
+        let headers_priority = request
+            .extensions()
+            .get_ref::<RequestHeadersPriority>()
+            .map(|priority| priority.0.clone());
+        let chrome_hpack_indexing = request.extensions().contains::<RequestHpackIndexing>();
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -361,7 +370,8 @@ where
             protocol,
             end_of_stream,
             me.headers_pseudo_order.clone(),
-            None,
+            headers_priority,
+            chrome_hpack_indexing,
         )?;
 
         let mut stream = Stream::try_new(

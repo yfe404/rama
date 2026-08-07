@@ -142,7 +142,7 @@ use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::{BoxError, BoxErrorExt};
-use rama_core::extensions::{Extensions, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
@@ -159,6 +159,21 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+
+/// Per-request priority encoded in the request HEADERS frame.
+///
+/// The dependency is a desired relationship, because the request's concrete
+/// stream ID is not allocated until the send seam. If that allocation would
+/// make the stream depend on itself, the encoder keeps the requested weight
+/// and exclusivity but attaches it to the root stream instead. HTTP/2 forbids
+/// self-dependency, and Chromium uses that root relationship when its first
+/// weighted subresource occupies the requested dependency ID.
+#[derive(Clone, Debug, Extension)]
+pub struct RequestHeadersPriority(pub StreamDependency);
+
+/// Request-scoped HPACK policy matching Chromium's cookie/content-length use.
+#[derive(Clone, Copy, Debug, Extension)]
+pub struct RequestHpackIndexing;
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -1840,6 +1855,18 @@ impl PushedResponseFuture {
 // ===== impl Peer =====
 
 impl Peer {
+    fn valid_headers_priority(
+        id: StreamId,
+        mut priority: Option<StreamDependency>,
+    ) -> Option<StreamDependency> {
+        if let Some(dependency) = priority.as_mut()
+            && dependency.dependency_id == id
+        {
+            dependency.dependency_id = StreamId::zero();
+        }
+        priority
+    }
+
     pub(crate) fn convert_send_message(
         id: StreamId,
         request: Request<()>,
@@ -1847,6 +1874,7 @@ impl Peer {
         end_of_stream: bool,
         headers_pseudo_order: Option<PseudoHeaderOrder>,
         headers_priority: Option<StreamDependency>,
+        chrome_hpack_indexing: bool,
     ) -> Result<(Headers, Extensions), SendError> {
         use request::Parts;
 
@@ -1906,8 +1934,17 @@ impl Peer {
             }
         }
 
+        // A dependency is selected before this request receives an actual
+        // stream ID. Normalize the only allocation-dependent invalid shape at
+        // the final send seam instead of leaking a self-dependent HEADERS
+        // priority to the peer.
+        let headers_priority = Self::valid_headers_priority(id, headers_priority);
+
         // Create the HEADERS frame
         let mut frame = Headers::new(id, pseudo, headers, headers_priority);
+        if chrome_hpack_indexing {
+            frame.set_chrome_hpack_indexing();
+        }
 
         if end_of_stream {
             frame.set_end_stream()
@@ -1962,5 +1999,83 @@ impl proto::Peer for Peer {
         *response.headers_mut() = fields;
 
         Ok(response)
+    }
+}
+#[cfg(test)]
+mod request_headers_priority_tests {
+    use super::*;
+    use rama_core::bytes::{BufMut, BytesMut};
+    use rama_http_types::proto::h2::{frame::Head, hpack};
+
+    fn encoded_request_priority(
+        stream_id: StreamId,
+        priority: StreamDependency,
+    ) -> StreamDependency {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let (mut headers, _) =
+            Peer::convert_send_message(stream_id, request, None, true, None, Some(priority), false)
+                .unwrap();
+        headers.set_end_headers();
+
+        let mut encoded = BytesMut::with_capacity(256);
+        let mut limited = (&mut encoded).limit(256);
+        assert!(
+            headers
+                .encode(&mut hpack::Encoder::default(), &mut limited)
+                .is_none()
+        );
+
+        let head = Head::parse(&encoded[..9]).unwrap();
+        assert_eq!(head.stream_id(), stream_id);
+        StreamDependency::load(&encoded[9..14]).unwrap()
+    }
+
+    #[test]
+    fn self_dependency_falls_back_to_root_without_changing_weight_or_exclusivity() {
+        let priority = StreamDependency::new(StreamId::from(3), 219, true);
+
+        let normalized = Peer::valid_headers_priority(StreamId::from(3), Some(priority)).unwrap();
+
+        assert_eq!(normalized.dependency_id, StreamId::zero());
+        assert_eq!(normalized.weight, 219);
+        assert!(normalized.is_exclusive);
+    }
+
+    #[test]
+    fn valid_dependency_is_preserved_exactly() {
+        let priority = StreamDependency::new(StreamId::from(3), 219, true);
+
+        let normalized =
+            Peer::valid_headers_priority(StreamId::from(5), Some(priority.clone())).unwrap();
+
+        assert_eq!(normalized, priority);
+    }
+
+    #[test]
+    fn absent_priority_remains_absent() {
+        assert!(Peer::valid_headers_priority(StreamId::from(3), None).is_none());
+    }
+
+    #[test]
+    fn conversion_encodes_a_valid_priority_when_the_requested_dependency_is_the_stream_id() {
+        let encoded = encoded_request_priority(
+            StreamId::from(3),
+            StreamDependency::new(StreamId::from(3), 219, true),
+        );
+
+        assert_eq!(encoded.dependency_id, StreamId::zero());
+        assert_eq!(encoded.weight, 219);
+        assert!(encoded.is_exclusive);
+
+        let valid = StreamDependency::new(StreamId::from(3), 219, true);
+        assert_eq!(
+            encoded_request_priority(StreamId::from(5), valid.clone()),
+            valid
+        );
     }
 }

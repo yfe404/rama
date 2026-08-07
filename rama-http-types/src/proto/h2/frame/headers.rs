@@ -35,6 +35,9 @@ pub struct Headers {
 
     /// The associated flags
     flags: HeadersFlag,
+
+    /// Match Chromium's request-side HPACK indexing policy.
+    chrome_hpack_indexing: bool,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -192,6 +195,11 @@ impl Headers {
         fields: HeaderMap,
         stream_dep: Option<StreamDependency>,
     ) -> Self {
+        let mut flags = HeadersFlag::default();
+        if stream_dep.is_some() {
+            flags.set_priority();
+        }
+
         Self {
             stream_id,
             stream_dep,
@@ -201,7 +209,8 @@ impl Headers {
                 is_over_size: false,
                 pseudo,
             },
-            flags: HeadersFlag::default(),
+            flags,
+            chrome_hpack_indexing: false,
         }
     }
 
@@ -220,6 +229,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
+            chrome_hpack_indexing: false,
         }
     }
 
@@ -285,6 +295,7 @@ impl Headers {
                 pseudo: Pseudo::default(),
             },
             flags,
+            chrome_hpack_indexing: false,
         };
 
         Ok((headers, src))
@@ -317,6 +328,10 @@ impl Headers {
 
     pub fn set_end_stream(&mut self) {
         self.flags.set_end_stream()
+    }
+
+    pub fn set_chrome_hpack_indexing(&mut self) {
+        self.chrome_hpack_indexing = true;
     }
 
     pub fn is_over_size(&self) -> bool {
@@ -363,9 +378,16 @@ impl Headers {
         // Get the HEADERS frame head
         let head = self.head();
 
+        let stream_dep = self.stream_dep;
+        let chrome_hpack_indexing = self.chrome_hpack_indexing;
+
         self.header_block
-            .into_encoding(encoder)
-            .encode(head, dst, |_| {})
+            .into_encoding(encoder, chrome_hpack_indexing)
+            .encode(head, dst, |dst| {
+                if let Some(dependency) = stream_dep {
+                    dependency.encode(dst);
+                }
+            })
     }
 
     fn head(&self) -> Head {
@@ -591,7 +613,7 @@ impl PushPromise {
         let promised_id = self.promised_id;
 
         self.header_block
-            .into_encoding(encoder)
+            .into_encoding(encoder, false)
             .encode(head, dst, |dst| {
                 dst.put_u32(promised_id.into());
             })
@@ -919,6 +941,10 @@ impl HeadersFlag {
     pub fn is_priority(self) -> bool {
         self.0 & PRIORITY == PRIORITY
     }
+
+    pub fn set_priority(&mut self) {
+        self.0 |= PRIORITY;
+    }
 }
 
 impl Default for HeadersFlag {
@@ -1139,7 +1165,11 @@ impl HeaderBlock {
         Ok(())
     }
 
-    fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
+    fn into_encoding(
+        self,
+        encoder: &mut hpack::Encoder,
+        chrome_hpack_indexing: bool,
+    ) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
         let headers = Iter {
             pseudo_order: self.pseudo.order.iter(),
@@ -1147,7 +1177,7 @@ impl HeaderBlock {
             fields: self.fields.into_ordered_iter(),
         };
 
-        encoder.encode(headers, &mut hpack);
+        encoder.encode_with_policy(headers, &mut hpack, chrome_hpack_indexing);
 
         EncodingHeaderBlock {
             hpack: hpack.freeze(),
@@ -1194,6 +1224,33 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn headers_priority_is_encoded_in_the_headers_frame() {
+        let dependency = StreamDependency::new(StreamId::from(3), 219, false);
+        let mut headers = Headers::new(
+            StreamId::from(5),
+            Pseudo::default(),
+            HeaderMap::new(),
+            Some(dependency.clone()),
+        );
+        headers.set_end_stream();
+
+        let mut encoded = BytesMut::with_capacity(64);
+        let mut limited = (&mut encoded).limit(64);
+        let continuation = headers.encode(&mut hpack::Encoder::default(), &mut limited);
+        assert!(continuation.is_none());
+
+        let head = Head::parse(&encoded[..9]).unwrap();
+        assert_eq!(head.kind(), Kind::Headers);
+        assert_eq!(head.flag(), END_STREAM | END_HEADERS | PRIORITY);
+        let payload_len = u32::from_be_bytes([0, encoded[0], encoded[1], encoded[2]]) as usize;
+        assert_eq!(payload_len, encoded.len() - 9);
+
+        let (decoded, hpack_data) = Headers::load(head, BytesMut::from(&encoded[9..])).unwrap();
+        assert_eq!(decoded.stream_dep, Some(dependency));
+        assert!(hpack_data.is_empty());
+    }
 
     #[test]
     fn test_connect_request_pseudo_headers_omits_path_and_scheme() {
