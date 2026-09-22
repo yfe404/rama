@@ -138,6 +138,7 @@
 //! [`Error`]: ../struct.Error.html
 
 use crate::h2::codec::{Codec, SendError, UserError};
+pub use crate::h2::proto::RequestPriority;
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use crate::proto::target::{OutgoingHost, host_is_wire_authority, outgoing_host};

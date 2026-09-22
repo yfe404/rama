@@ -328,7 +328,6 @@ where
                 tracing::trace!("encoded window_update: rem = {}", self.buf.remaining());
             }
 
-            // Only replayed early frames send PRIORITY.
             Frame::Priority(v) => {
                 v.encode(self.buf.get_mut());
                 tracing::trace!("encoded priority: rem = {}", self.buf.remaining());
