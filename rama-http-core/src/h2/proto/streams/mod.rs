@@ -14,6 +14,7 @@ pub(crate) use self::counts::LocalStreams;
 pub(crate) use self::prioritize::Prioritized;
 pub(crate) use self::recv::Open;
 pub(crate) use self::send::PollReset;
+pub use self::streams::RequestPriority;
 pub(crate) use self::streams::{
     DynStreams, OpaqueStreamRef, RecvOutcome, ReplayStep, StreamRef, Streams,
 };

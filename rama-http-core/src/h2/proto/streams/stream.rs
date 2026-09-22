@@ -92,6 +92,8 @@ pub(super) struct Stream {
 
     /// Request origin retained for connection-local ALTSVC association.
     pub alt_svc_origin: Option<HttpOrigin>,
+    /// Encoded weight for requests opting into the dependency chain.
+    pub request_priority: Option<u8>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
@@ -257,6 +259,7 @@ impl Stream {
             extensions,
             req_extensions: None,
             alt_svc_origin: None,
+            request_priority: None,
             ref_count: 0,
             is_counted: false,
             is_live_local: false,
