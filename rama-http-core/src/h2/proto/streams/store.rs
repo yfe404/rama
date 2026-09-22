@@ -3,6 +3,8 @@ use super::*;
 use indexmap::{self, IndexMap};
 use rama_core::telemetry::tracing::{self, warn};
 
+use rama_http_types::proto::h2::frame::Priority;
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::fmt;
 use std::marker::PhantomData;
@@ -13,6 +15,8 @@ use std::ops;
 pub(super) struct Store {
     slab: slab::Slab<Stream>,
     ids: IndexMap<StreamId, SlabIndex>,
+    pub(super) priority_order: Vec<(StreamId, u8)>,
+    pub(super) priority_updates: VecDeque<Priority>,
 }
 
 /// "Pointer" to an entry in the store
@@ -93,6 +97,8 @@ impl Store {
         Self {
             slab: slab::Slab::new(),
             ids: IndexMap::new(),
+            priority_order: Vec::new(),
+            priority_updates: VecDeque::new(),
         }
     }
 

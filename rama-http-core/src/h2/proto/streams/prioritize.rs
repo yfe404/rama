@@ -544,7 +544,13 @@ impl Prioritize {
             }
 
             match self.pop_frame(buffer, store, max_frame_len, counts)? {
-                Some(frame) => {
+                Some(mut frame) => {
+                    if let Frame::Headers(headers) = &mut frame
+                        && headers.pseudo().method.is_some()
+                        && let Some(priority) = store.open_priority(headers.stream_id())
+                    {
+                        headers.set_stream_dependency(Some(priority));
+                    }
                     tracing::trace!(?frame, "writing");
 
                     debug_assert_eq!(self.in_flight_data_frame, InFlightData::Nothing);

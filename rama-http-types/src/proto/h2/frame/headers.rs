@@ -192,6 +192,10 @@ impl Headers {
         fields: HeaderMap,
         stream_dep: Option<StreamDependency>,
     ) -> Self {
+        let mut flags = HeadersFlag::default();
+        if stream_dep.is_some() {
+            flags.0 |= PRIORITY;
+        }
         Self {
             stream_id,
             stream_dep,
@@ -201,8 +205,17 @@ impl Headers {
                 is_over_size: false,
                 pseudo,
             },
-            flags: HeadersFlag::default(),
+            flags,
         }
+    }
+
+    /// Replace the priority prefix before encoding this HEADERS frame.
+    pub fn set_stream_dependency(&mut self, dependency: Option<StreamDependency>) {
+        self.flags.0 &= !PRIORITY;
+        if dependency.is_some() {
+            self.flags.0 |= PRIORITY;
+        }
+        self.stream_dep = dependency;
     }
 
     #[must_use]
@@ -362,10 +375,15 @@ impl Headers {
 
         // Get the HEADERS frame head
         let head = self.head();
+        let stream_dep = self.stream_dep;
 
         self.header_block
             .into_encoding(encoder)
-            .encode(head, dst, Some(encoder), |_| {})
+            .encode(head, dst, Some(encoder), |dst| {
+                if let Some(dependency) = stream_dep {
+                    dependency.encode(dst);
+                }
+            })
     }
 
     fn head(&self) -> Head {

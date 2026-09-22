@@ -3,6 +3,9 @@
     reason = "vendored from upstream `h2`: many `&mut self` methods preserve API symmetry/locking-position semantics that the `&self` form would lose"
 )]
 
+mod priority;
+pub use priority::RequestPriority;
+
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, BufferStatus, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
@@ -377,6 +380,11 @@ where
         use rama_http_types::Method;
 
         let protocol = request.extensions().get_ref::<Protocol>().cloned();
+        let priority = request.extensions().get_ref::<RequestPriority>().cloned();
+        let mut priority = priority
+            .as_ref()
+            .map(RequestPriority::for_request)
+            .transpose()?;
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -443,6 +451,7 @@ where
         // stream-specific metadata that was unavailable to the outer layers.
         req_ext.insert(Egress(stream.extensions.clone()));
         stream.req_extensions = Some(req_ext);
+        stream.request_priority = priority.as_ref().map(|state| state.weight);
 
         match request_method {
             Method::HEAD => stream.content_length = ContentLength::Head,
@@ -476,6 +485,9 @@ where
         // the lock, so it can't.
         me.refs += 1;
 
+        if let Some(priority) = priority.as_mut() {
+            priority.bind(&self.inner, stream_id);
+        }
         let is_full = me.counts.next_send_stream_will_reach_capacity();
         Ok((
             StreamRef {
@@ -1138,6 +1150,18 @@ impl Inner {
             == BufferStatus::CodecFull
         {
             return Ok(BufferStatus::CodecFull);
+        }
+
+        // Priority changes are connection-ordered, not per-stream send-queue
+        // work. Earlier HEADERS are already in the codec; later HEADERS must
+        // not overtake a queued change, including two-frame child reconnections.
+        while !self.store.priority_updates.is_empty() {
+            if !dst.has_send_capacity() {
+                return Ok(BufferStatus::CodecFull);
+            }
+            if let Some(priority) = self.store.priority_updates.pop_front() {
+                dst.buffer(priority.into())?;
+            }
         }
 
         // Send any other pending frames

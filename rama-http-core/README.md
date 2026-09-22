@@ -51,6 +51,35 @@ This crate is used by [`rama-http-backend`] and thus also [`rama`].
 
 Crate used by the end-user [`rama`] crate and `rama` "http" crate authors alike.
 
+### Request priority on HTTP/2
+
+Insert `h2::client::RequestPriority` into a request's extensions to use an
+exclusive dependency chain ordered by encoded weight (`0..=255`). Higher
+weights form higher-priority bands. A request depends on the last live stream
+in the nearest band at or above its own; equal-weight streams retain their
+opening order. Requests without this extension keep their existing behavior.
+
+Keep a clone of the control to call `set_weight` while a request is in flight.
+Changes before the first HEADERS update its initial priority. Later changes
+update the connection's ordering, emitting PRIORITY frames only when the parent
+changes. Child reconnections precede the moved stream's update, and both precede
+later HEADERS. Call controls in the intended order rather than sending changes
+through independently polled request queues.
+
+Use a separate control for each concurrent request. Reusing a control while
+its stream is live returns a rejected-request error. After stream closure, you
+can reuse it for a retry or redirect; it retains the latest weight. Controls
+hold weak connection references and do not keep streams alive. The caller owns
+resource classification and chooses the weights; this crate does not identify
+browser resource kinds or schedule visibility-driven promotions.
+
+The connection store owns dependency membership and pending priority frames.
+`src/h2/proto/streams/streams/priority.rs` owns the control and dependency
+ordering, adapted from Chromium's `Http2PriorityDependencies` at revision
+`3188f8a607ae7e067593be8aab7f02d2451fec07` under its adjacent
+`CHROMIUM-LICENSE`. `tests/h2_priority.rs` exercises the public client and wire
+format, including lifecycle, ordered changes, and fragmented HPACK.
+
 Learn more about [`rama`]:
 
 - Github: <https://github.com/plabayo/rama>

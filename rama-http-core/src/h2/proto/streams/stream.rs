@@ -85,6 +85,9 @@ pub(super) struct Stream {
     /// it to create the response extensions
     pub req_extensions: Option<Extensions>,
 
+    /// Encoded weight for requests opting into the dependency chain.
+    pub request_priority: Option<u8>,
+
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
     pub next_pending_accept: Option<store::Key>,
@@ -248,6 +251,7 @@ impl Stream {
             state: State::default(),
             extensions,
             req_extensions: None,
+            request_priority: None,
             ref_count: 0,
             is_counted: false,
 
