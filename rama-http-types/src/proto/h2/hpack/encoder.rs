@@ -566,6 +566,7 @@ mod test {
         assert_eq!("12345", huff_decode(&res[3..]));
     }
 
+    #[cfg(not(feature = "hpack-index-content-length"))]
     #[test]
     fn test_content_length_value_not_indexed() {
         let mut encoder = Encoder::default();
@@ -574,6 +575,23 @@ mod test {
         assert_eq!(&[15, 13, 0x80 | 3], &res[0..3]);
         assert_eq!("1234", huff_decode(&res[3..]));
         assert_eq!(6, res.len());
+    }
+
+    #[cfg(feature = "hpack-index-content-length")]
+    #[test]
+    fn test_content_length_value_indexed() {
+        let mut encoder = Encoder::default();
+        let first = encode(&mut encoder, vec![header("content-length", "1234")]);
+        assert_eq!(&[0x40 | 28, 0x80 | 3], &first[..2]);
+        assert_eq!("1234", huff_decode(&first[2..]));
+        assert_eq!(5, first.len());
+
+        let repeated = encode(&mut encoder, vec![header("content-length", "1234")]);
+        assert_eq!(&[0x80 | 62], &repeated[..]);
+
+        let changed = encode(&mut encoder, vec![header("content-length", "99")]);
+        assert_eq!(0x40 | 28, changed[0]);
+        assert_eq!("99", huff_decode(&changed[2..]));
     }
 
     #[test]

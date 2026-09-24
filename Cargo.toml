@@ -425,6 +425,7 @@ test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils", "rama-quic?/test-u
 fuzz-utils = ["rama-quic?/fuzz-utils", "rama-quic-proto?/fuzz-utils"]
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
+hpack-index-content-length = ["rama-http?/hpack-index-content-length"]
 compression = [
     "std",
     "http",

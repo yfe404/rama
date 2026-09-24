@@ -207,13 +207,14 @@ impl Header {
                         name.standard(),
                         Some(
                             header::StandardHeader::Age
-                                | header::StandardHeader::ContentLength
                                 | header::StandardHeader::Etag
                                 | header::StandardHeader::IfModifiedSince
                                 | header::StandardHeader::IfNoneMatch
                                 | header::StandardHeader::Location
                         )
                     )
+                    || (!cfg!(feature = "hpack-index-content-length")
+                        && name.standard() == Some(header::StandardHeader::ContentLength))
             }
             Self::Path(..) => true,
             _ => false,
