@@ -156,6 +156,12 @@ where
         self.framed_write().buffer(item)
     }
 
+    /// Buffer raw bytes ahead of the first frame, for the client connection
+    /// preface. See [`FramedWrite::buffer_preamble`].
+    pub(crate) fn buffer_preamble(&mut self, bytes: &[u8]) {
+        self.framed_write().buffer_preamble(bytes);
+    }
+
     /// Flush buffered data to the wire
     pub fn flush(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
         self.framed_write().flush(cx)

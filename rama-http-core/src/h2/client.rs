@@ -159,7 +159,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -1470,19 +1470,8 @@ where
 
 // ===== impl Connection =====
 
-async fn bind_connection<T>(io: &mut T) -> Result<(), crate::h2::Error>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
-    tracing::debug!("binding client connection");
-
-    let msg: &'static [u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-    io.write_all(msg).await.map_err(crate::h2::Error::from_io)?;
-
-    tracing::debug!("client connection bound");
-
-    Ok(())
-}
+/// The HTTP/2 client connection preface, RFC 9113 section 3.4.
+const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 impl<T, B> Connection<T, B>
 where
@@ -1490,16 +1479,23 @@ where
     B: Buf,
 {
     async fn handshake2(
-        mut io: T,
+        io: T,
         builder: Builder,
     ) -> Result<(SendRequest<B>, Self), crate::h2::Error> {
-        bind_connection(&mut io).await?;
+        tracing::debug!("binding client connection");
         io.extensions().insert(StreamTransformed {
             by: "rama-http-core::h2::client",
         });
 
         // Create the codec
         let mut codec = Codec::new(io);
+        // The preface goes into the codec's buffer rather than straight to the
+        // I/O object, so that it leaves with the first SETTINGS flush in one
+        // write — and so, over TLS, in one record. Writing it separately gave
+        // the preface a record of its own, which is a shape no browser has
+        // (measured against branded Windows Chrome 154, ticket #97).
+        codec.buffer_preamble(CLIENT_PREFACE);
+        tracing::debug!("client connection bound");
 
         let (initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
             let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);

@@ -137,6 +137,20 @@ where
         self.encoder.buffer(item)
     }
 
+    /// Buffer raw bytes ahead of the first frame.
+    ///
+    /// This exists for the client connection preface. Writing the preface
+    /// straight to the I/O object puts it in a write of its own, which over
+    /// TLS makes it a record of its own — a shape no browser produces.
+    /// Buffering it here lets it leave with the first SETTINGS flush, in one
+    /// record, as Chrome sends it.
+    ///
+    /// Only valid before anything else has been buffered.
+    pub(super) fn buffer_preamble(&mut self, bytes: &[u8]) {
+        debug_assert!(self.encoder.is_empty() && self.encoder.next.is_none());
+        self.encoder.buf.get_mut().extend_from_slice(bytes);
+    }
+
     /// Flush buffered data to the wire
     pub(super) fn flush(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
         let span = tracing::trace_span!("FramedWrite::flush");
