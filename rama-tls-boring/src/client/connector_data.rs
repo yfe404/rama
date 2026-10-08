@@ -280,14 +280,31 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             curves.dedup();
             curves
         });
+        // A captured ClientHello records the one GREASE signature algorithm that
+        // handshake happened to use. Replaying that exact value is wrong twice
+        // over: boring rejects a codepoint it has no algorithm for, and the
+        // browser draws a fresh value per handshake. Its presence is the signal
+        // that boring's own signature-algorithm GREASE belongs on instead.
+        let grease_sigalgs = value
+            .signature_schemes
+            .is_some_and(|p| p.0.iter().any(|s| s.is_grease()));
         let verify_algorithm_prefs = value.signature_schemes.map(|p| {
             // Distinct rama schemes can map to the same boring `SslSignatureAlgorithm`;
             // drop the resulting consecutive duplicates (boring errors on
             // DUPLICATE_SIGNATURE_ALGORITHM otherwise).
-            let mut prefs: Vec<SslSignatureAlgorithm> =
-                p.0.iter()
-                    .filter_map(|s| (*s).rama_try_into().ok())
-                    .collect();
+            let mut prefs: Vec<SslSignatureAlgorithm> = Vec::with_capacity(p.0.len());
+            for scheme in p.0.iter().filter(|s| !s.is_grease()) {
+                match (*scheme).rama_try_into() {
+                    Ok(pref) => prefs.push(pref),
+                    // Keep the drop visible: a declared scheme that does not
+                    // reach the wire silently is how #92 lost Chrome 154's
+                    // ML-DSA algorithms.
+                    Err(_) => trace!(
+                        ?scheme,
+                        "boring connector: declared signature scheme has no boring algorithm"
+                    ),
+                }
+            }
             prefs.dedup();
             prefs
         });
@@ -451,6 +468,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         }
 
         cfg_builder.set_grease_enabled(grease_enabled);
+        cfg_builder.set_grease_sigalgs_enabled(grease_sigalgs);
 
         if ocsp_stapling_enabled {
             cfg_builder.enable_ocsp_stapling();
