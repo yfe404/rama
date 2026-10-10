@@ -4096,7 +4096,7 @@ dependencies = [
 [[package]]
 name = "rama-boring"
 version = "0.6.9"
-source = "git+https://github.com/yfe404/rama-boring?rev=e674af1133633bb09c698323009411e15eba2294#e674af1133633bb09c698323009411e15eba2294"
+source = "git+https://github.com/yfe404/rama-boring?rev=b2053e9f442a6b27bc8c95bd5cec7ce056501bec#b2053e9f442a6b27bc8c95bd5cec7ce056501bec"
 dependencies = [
  "bitflags 2.13.2",
  "foreign-types",
@@ -4108,7 +4108,7 @@ dependencies = [
 [[package]]
 name = "rama-boring-sys"
 version = "0.6.9"
-source = "git+https://github.com/yfe404/rama-boring?rev=e674af1133633bb09c698323009411e15eba2294#e674af1133633bb09c698323009411e15eba2294"
+source = "git+https://github.com/yfe404/rama-boring?rev=b2053e9f442a6b27bc8c95bd5cec7ce056501bec#b2053e9f442a6b27bc8c95bd5cec7ce056501bec"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",
@@ -4119,7 +4119,7 @@ dependencies = [
 [[package]]
 name = "rama-boring-tokio"
 version = "0.6.9"
-source = "git+https://github.com/yfe404/rama-boring?rev=e674af1133633bb09c698323009411e15eba2294#e674af1133633bb09c698323009411e15eba2294"
+source = "git+https://github.com/yfe404/rama-boring?rev=b2053e9f442a6b27bc8c95bd5cec7ce056501bec#b2053e9f442a6b27bc8c95bd5cec7ce056501bec"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
