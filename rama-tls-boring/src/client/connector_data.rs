@@ -339,9 +339,27 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         let curves: Option<Vec<SslCurve>> = value
             .supported_groups
             .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        // A GREASE entry switches boring's own signature-algorithm GREASE on (see
+        // `grease_signature_schemes`). Any other scheme boring has no algorithm
+        // for is refused rather than dropped: a declared scheme must not
+        // disappear from the wire silently.
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
-            .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
+            .map(|p| {
+                let mut prefs = Vec::with_capacity(p.0.len());
+                for scheme in p.0.iter().filter(|s| !s.is_grease()) {
+                    prefs.push((*scheme).rama_try_into().map_err(
+                        |scheme: rama_tls::SignatureScheme| {
+                            BoxError::from_static_str(
+                            "boring connector: declared signature scheme has no boring algorithm",
+                        )
+                        .context_field("signature_scheme", scheme)
+                        },
+                    )?);
+                }
+                Ok::<_, BoxError>(native_unique(prefs.into_iter()))
+            })
+            .transpose()?;
         // BoringSSL only accepts key shares for an ordered subset of the offered groups.
         let key_shares: Option<Vec<SslCurve>> = value.key_shares.map(|p| {
             let shares = p.0.iter().filter_map(|g| (*g).rama_try_into().ok());
@@ -1024,6 +1042,56 @@ mod tests {
         let config = BoringTlsConnectorConfig::from_extensions(&ext);
         // This would crash if we didn't dedup properly
         TlsConnectorData::try_from(config).expect("build with duplicate signature schemes");
+    }
+
+    #[test]
+    fn build_accepts_a_mappable_signature_scheme_list() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::ML_DSA_44,
+            SignatureScheme::ML_DSA_65,
+            SignatureScheme::ML_DSA_87,
+        ]));
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).expect("build with a fully mappable scheme list");
+    }
+
+    #[test]
+    fn build_accepts_a_grease_signature_scheme() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::Unknown(0x0a0a),
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ML_DSA_44,
+        ]));
+        assert!(SignatureScheme::Unknown(0x0a0a).is_grease());
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).expect("a GREASE entry is not a refused scheme");
+    }
+
+    #[test]
+    fn build_refuses_an_unmappable_non_grease_signature_scheme() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            // ED448 is a named TLS signature scheme with no boring algorithm,
+            // and not a GREASE codepoint.
+            SignatureScheme::ED448,
+        ]));
+        assert!(!SignatureScheme::ED448.is_grease());
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        let err = TlsConnectorData::try_from(config)
+            .expect_err("an unmappable non-GREASE scheme must be a validation error");
+        assert!(
+            err.to_string()
+                .contains("declared signature scheme has no boring algorithm"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
