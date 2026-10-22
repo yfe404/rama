@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_mimic_configuration_keeps_its_default_unknown_value_policy() {
+    fn ordinary_mimic_configuration_without_a_policy_refuses_an_unknown_signature_scheme() {
         let source = offered_hello();
         // Without a policy, an unknown signature scheme is refused rather than dropped.
         let ordinary = TlsClientConfig::new_from_client_hello(&source)
