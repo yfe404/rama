@@ -546,6 +546,21 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
                 "build (boring) ssl connector: no supported group",
             ));
         }
+        // A declared scheme must not disappear from the wire silently. A GREASE entry is a
+        // GREASE slot, and an unknown-value policy set by the caller decides the rest; without
+        // one, a non-GREASE scheme BoringSSL does not implement would be dropped by default, so
+        // it is refused here with a named error.
+        if let Some(schemes) = value.signature_schemes
+            && value.unknown_values.is_none()
+            && let Some(scheme) = schemes.0.iter().find(|s| {
+                !s.is_grease() && SslSignatureAlgorithm::from(u16::from(**s)).name().is_none()
+            })
+        {
+            return Err(BoxError::from_static_str(
+                "boring connector: declared signature scheme has no boring algorithm",
+            )
+            .context_field("signature_scheme", *scheme));
+        }
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
             .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
@@ -1350,6 +1365,72 @@ mod tests {
         let config = BoringTlsConnectorConfig::from_extensions(&ext);
         // This would crash if we didn't dedup properly
         TlsConnectorData::try_from(config).expect("build with duplicate signature schemes");
+    }
+
+    #[test]
+    fn build_accepts_a_mappable_signature_scheme_list() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::ML_DSA_44,
+            SignatureScheme::ML_DSA_65,
+            SignatureScheme::ML_DSA_87,
+        ]));
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).expect("build with a fully mappable scheme list");
+    }
+
+    #[test]
+    fn build_accepts_a_grease_signature_scheme() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::Unknown(0x0a0a),
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ML_DSA_44,
+        ]));
+        assert!(SignatureScheme::Unknown(0x0a0a).is_grease());
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        TlsConnectorData::try_from(config).expect("a GREASE entry is not a refused scheme");
+    }
+
+    #[test]
+    fn build_refuses_an_unmappable_non_grease_signature_scheme() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            // ED448 is a named TLS signature scheme with no boring algorithm,
+            // and not a GREASE codepoint.
+            SignatureScheme::ED448,
+        ]));
+        assert!(!SignatureScheme::ED448.is_grease());
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        let err = TlsConnectorData::try_from(config)
+            .expect_err("an unmappable non-GREASE scheme must be a validation error");
+        assert!(
+            err.to_string()
+                .contains("declared signature scheme has no boring algorithm"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_leaves_an_unmappable_signature_scheme_to_an_explicit_unknown_value_policy() {
+        for policy in [UnknownValues::Drop, UnknownValues::Preserve] {
+            let ext = Extensions::new();
+            ext.insert(BoringSignatureSchemes(vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ED448,
+            ]));
+            ext.insert(crate::client::config::BoringUnknownValues(policy));
+
+            let config = BoringTlsConnectorConfig::from_extensions(&ext);
+            TlsConnectorData::try_from(config)
+                .expect("an explicit policy decides the scheme, it is not refused");
+        }
     }
 
     #[test]

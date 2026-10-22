@@ -351,21 +351,16 @@ mod tests {
     #[test]
     fn ordinary_mimic_configuration_keeps_its_default_unknown_value_policy() {
         let source = offered_hello();
-        let ordinary = emitted(
-            &TlsClientConfig::new_from_client_hello(&source)
-                .with_server_verify(ServerVerifyMode::Disable),
-        );
-        assert_eq!(
-            ordinary.ext_supported_groups().unwrap(),
-            [SupportedGroup::X25519]
-        );
+        // Without a policy, an unknown signature scheme is refused rather than dropped.
+        let ordinary = TlsClientConfig::new_from_client_hello(&source)
+            .with_server_verify(ServerVerifyMode::Disable);
+        let err = TlsConnectorData::try_from(&ordinary)
+            .expect_err("the default policy refuses an unknown signature scheme");
         assert!(
-            !ordinary
-                .ext_signature_algorithms()
-                .unwrap()
-                .contains(&SignatureScheme::from(0x0999))
+            err.to_string()
+                .contains("declared signature scheme has no boring algorithm"),
+            "unexpected error: {err}"
         );
-        assert_eq!(opaque_body(&ordinary, ExtensionId::from(50)), None);
 
         let default = tls_client_config(None, None, KeyLogIntent::Disabled, None);
         assert!(

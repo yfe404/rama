@@ -836,20 +836,34 @@ fn hello_with_unknown_values() -> ClientHello {
     )
 }
 
+#[test]
+fn an_unknown_signature_scheme_is_refused_without_an_unknown_value_policy() {
+    let config = TlsClientConfig::new_from_client_hello(&hello_with_unknown_values());
+    let err = TlsConnectorData::try_from(&config)
+        .expect_err("a scheme the default policy would drop must be refused");
+    assert!(
+        err.to_string()
+            .contains("declared signature scheme has no boring algorithm"),
+        "unexpected error: {err}"
+    );
+}
+
 pub(super) fn emitted_with(config: &TlsClientConfig) -> ClientHello {
     hello_from_data(TlsConnectorData::try_from(config).unwrap())
 }
 
 #[test]
-fn unknown_values_are_dropped_by_default_and_preserved_on_request() {
+fn unknown_values_are_dropped_or_preserved_on_request() {
     let captured = hello_with_unknown_values();
     let unknown_group = SupportedGroup::from(0x0abc);
     let unknown_scheme = SignatureScheme::from(0x0999);
     for preserve in [false, true] {
         let mut config = TlsClientConfig::new_from_client_hello(&captured);
-        if preserve {
-            config.set_unknown_values(UnknownValues::Preserve);
-        }
+        config.set_unknown_values(if preserve {
+            UnknownValues::Preserve
+        } else {
+            UnknownValues::Drop
+        });
         let emitted = emitted_with(&config);
         let groups = emitted.ext_supported_groups().unwrap();
         let schemes = emitted.ext_signature_algorithms().unwrap();
