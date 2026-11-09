@@ -22,8 +22,8 @@ use rama_net::{
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
 use rama_tls::client::{
-    NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsConnectionReuse,
-    TlsServerCertPinCheck, TlsServerCertPins, TlsServerIdentity,
+    NegotiatedTlsParameters, PeerApplicationSettings, ServerVerifyMode, TlsClientConfig,
+    TlsConnectionReuse, TlsServerCertPinCheck, TlsServerCertPins, TlsServerIdentity,
 };
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 use rama_utils::macros::generate_set_and_with;
@@ -991,6 +991,17 @@ where
                 stream.ssl().selected_alpn_protocol(),
                 depth,
             );
+        }
+
+        // The server's ALPS payload travels with the connection, so an HTTP
+        // client can honour an `ACCEPT_CH` it carries before its first request.
+        if let Some(settings) = stream.ssl().peer_application_settings()
+            && !settings.is_empty()
+        {
+            stream
+                .get_ref()
+                .extensions()
+                .insert(PeerApplicationSettings(settings.to_vec()));
         }
 
         Ok((stream, params))

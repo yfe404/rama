@@ -56,6 +56,15 @@ use rama_net::tls::ApplicationProtocol;
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
+/// The peer's Application-Layer Protocol Settings (ALPS), as received during
+/// the handshake and stored in connection extensions by a backend that can
+/// surface them, only when the peer sent any. For HTTP/2 the bytes are the
+/// server's settings sequence (`SETTINGS`, `ACCEPT_CH`, ...) a client applies
+/// before its first request on the connection.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct PeerApplicationSettings(pub Vec<u8>);
+
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(tls))]
 /// TLS parameters reported by either endpoint and stored in connection extensions.
