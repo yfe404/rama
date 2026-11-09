@@ -28,6 +28,7 @@ targets = [
 default = []
 tls = ["dep:rama-tls", "rama-tls/http"]
 hpack-index-content-length = []
+hpack-index-cookie = []
 
 [dependencies]
 bytes = { workspace = true, features = ["std"] }

@@ -435,6 +435,7 @@ fuzz-utils = [
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
 hpack-index-content-length = ["rama-http?/hpack-index-content-length"]
+hpack-index-cookie = ["rama-http?/hpack-index-cookie"]
 compression = [
     "std",
     "http",

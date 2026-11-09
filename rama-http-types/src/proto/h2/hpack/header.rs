@@ -322,7 +322,12 @@ impl Header {
 
         match *self {
             Self::Field { ref name, .. } => {
-                name.is_sensitive()
+                // Chromium indexes each cookie crumb (one `cookie` field per
+                // cookie) with incremental indexing; nghttp2 never indexes
+                // the cookie value. The feature selects Chromium's behaviour.
+                (name.is_sensitive()
+                    && !(cfg!(feature = "hpack-index-cookie")
+                        && name.standard() == Some(header::StandardHeader::Cookie)))
                     || matches!(
                         name.standard(),
                         Some(

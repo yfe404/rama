@@ -646,6 +646,24 @@ mod test {
         assert_eq!(6, res.len());
     }
 
+    #[cfg(not(feature = "hpack-index-cookie"))]
+    #[test]
+    fn test_cookie_value_not_indexed() {
+        let mut encoder = Encoder::default();
+        let res = encode(&mut encoder, vec![header("cookie", "a=b")]);
+        assert_eq!(&[15, 17], &res[0..2]);
+    }
+
+    #[cfg(feature = "hpack-index-cookie")]
+    #[test]
+    fn test_cookie_value_indexed() {
+        let mut encoder = Encoder::default();
+        let first = encode(&mut encoder, vec![header("cookie", "a=b")]);
+        assert_eq!(0x40 | 32, first[0]);
+        let repeated = encode(&mut encoder, vec![header("cookie", "a=b")]);
+        assert_eq!(&[0x80 | 62], &repeated[..]);
+    }
+
     #[cfg(feature = "hpack-index-content-length")]
     #[test]
     fn test_content_length_value_indexed() {
